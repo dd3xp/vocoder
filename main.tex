@@ -1,0 +1,122 @@
+% 大数据课程论文模板
+% 格式: 宋体小四 (12pt), 行间距 20 磅, 首行缩进 2 字符
+% 内容覆盖课程要求 9 节
+% 编译: tectonic -X compile main.tex
+
+% fontset=fandol → 用 FandolSong (LaTeX 标准 宋体, 不是日式 Noto Mincho)
+\documentclass[a4paper, UTF8, zihao=-4, fontset=fandol]{ctexart}
+
+\usepackage[a4paper, top=2.5cm, bottom=2.5cm, left=2.5cm, right=2.5cm]{geometry}
+\usepackage{graphicx, amsmath, amssymb, booktabs, xcolor, caption, subcaption}
+\usepackage{algorithm, algorithmic}
+\usepackage[hidelinks]{hyperref}
+\usepackage{titlesec}
+
+% 行距 20 磅 (字号 12pt → linespread = 20/(12×1.2) ≈ 1.39)
+\linespread{1.39}\selectfont
+% 首行缩进 2 字符
+\setlength{\parindent}{2\ccwd}
+
+% 节标题: 黑体小三号
+\titleformat{\section}{\heiti\zihao{3}}{\thesection}{1em}{}
+\titleformat{\subsection}{\heiti\zihao{4}}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}{\heiti\zihao{-4}}{\thesubsubsection}{1em}{}
+
+\graphicspath{{figures/}}
+
+\begin{document}
+
+% ============ 标题区 ============
+\begin{center}
+{\heiti\zihao{2} \textcolor{red}{TODO 标题}}
+\\[8mm]
+{\zihao{-4}
+张景铭、黄诗源、杨子安、胡昱涵\\[2mm]
+复旦大学 计算与智能创新学院 \\[2mm]
+大数据分析技术 \quad 课程报告 \quad 组号: 5 \\[2mm]
+2026 年 6 月 26 日
+}
+\end{center}
+
+\vspace{5mm}
+
+% ============ 摘要 ============
+\noindent {\heiti\zihao{4} 摘\quad 要}\quad
+\textcolor{red}{TODO 摘要}
+
+\vspace{3mm}
+\noindent {\heiti\zihao{4} 关键词}\quad \textcolor{red}{TODO 关键词}
+
+\vspace{8mm}
+
+% ============ I 研究背景和意义 ============
+\section{研究背景和意义}
+
+\textcolor{red}{TODO 填写}
+
+% ============ II 研究目标和研究内容 ============
+\section{研究目标和研究内容}
+
+\textcolor{red}{TODO 填写}
+
+% ============ III 相关工作（同类研究进展） ============
+\section{相关工作（同类研究进展）}
+
+\textcolor{red}{TODO 填写}
+
+% ============ IV 研究方法 ============
+\section{研究方法}
+
+\subsection{数据集}
+
+\subsubsection{数据获取}
+
+\textcolor{red}{TODO 填写}
+
+\subsubsection{数据勘探（预处理）}
+
+\textcolor{red}{TODO 填写}
+
+\subsubsection{数据存储（如有）}
+
+\textcolor{red}{TODO 填写}
+
+\subsection{分析算法}
+
+\subsubsection{算法思想}
+
+\textcolor{red}{TODO 填写}
+
+\subsubsection{算法步骤}
+
+\textcolor{red}{TODO 填写}
+
+\subsubsection{伪代码}
+
+\textcolor{red}{TODO 填写}
+
+% ============ V 实验结果及分析 ============
+\section{实验结果及分析}
+
+\textcolor{red}{TODO 填写 (有实验结果图表, 对实验结果进行文字解释, 并给出分析依据)}
+
+% ============ VI 实例展现（Demo 截图等） ============
+\section{实例展现（Demo 截图等）}
+
+\textcolor{red}{TODO 填写}
+
+% ============ VII 总结和不足 ============
+\section{总结和不足}
+
+\textcolor{red}{TODO 填写}
+
+\subsection{小组成员与分工}
+
+\textcolor{red}{TODO 填写}
+
+% ============ VIII 参考文献 ============
+\section*{参考文献}
+
+\textcolor{red}{TODO 填写 (不少于 15 篇, 并且包含近三年的)}
+
+\end{document}
