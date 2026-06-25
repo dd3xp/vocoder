@@ -123,7 +123,19 @@
 \subsubsection{算法步骤}
 
 \paragraph{演奏信息模型}\quad
-输入预处理对每帧从 MIDI 派生图~\ref{fig:features} 所示的 20 维特征向量 (音符层 6 维、局部层 6 维、全局层 5 维、乐器族独热 3 维); 帧级序列编码将各声部特征向量经线性投影后, 送入权重共享的双向 Mamba 编码器 (隐藏维 128, 6 层), 沿时间维高效捕获长程双向依赖; 跨声部交互在 Mamba 编码器输出之上插入沿声部维 $S$ 作用的交互模块, 本文实现声部维多头自注意力、多深度交替 (时序卷积与声部维注意力交替堆叠) 与 FiLM 式聚合调制三种变体, 输入声部数 $S = 1$ 时该模块自然退化为恒等映射, 整套架构无需修改即可处理任意声部数; 跨时序回归再经双向 GRU (隐藏维 256, 1 层) 做最后一段时序整合, 输出 512 维隐表示; 双头解码部分中: $f_0$ 头输出 81 维音高 logits, 覆盖 MIDI 半音 38 至 118; $\mathrm{amp}$ 头采用 note-aware 设计, 先在帧级回归预测 $\log\mathrm{amp}$, 再以音符为单位聚合并平滑。 模型总可训练参数 7.66 M。 训练目标为: $L = L_{f_0} + 2 L_{\mathrm{amp}}$, 其中 $L_{f_0}$ 为 voiced 帧上的 81-bin 交叉熵, $L_{\mathrm{amp}}$ 为 log-amp 上的 Huber 损失加多尺度光滑项、Pearson 相关项与一阶差分项的加权组合。
+输入预处理对每帧从 MIDI 派生图~\ref{fig:features} 所示的 20 维特征向量 (音符层 6 维、局部层 6 维、全局层 5 维、乐器族独热 3 维); 帧级序列编码将各声部特征向量经线性投影后, 送入权重共享的双向 Mamba 编码器 (隐藏维 128, 6 层), 沿时间维高效捕获长程双向依赖; 跨声部交互在 Mamba 编码器输出之上插入沿声部维 $S$ 作用的交互模块, 本文实现声部维多头自注意力、多深度交替 (时序卷积与声部维注意力交替堆叠) 与 FiLM 式聚合调制三种变体, 其中 FiLM 变体取其他声部表示的掩码均值经两层 MLP 产生逐通道仿射系数 $(\gamma, \beta)$, 对本声部特征 $\mathbf{h}$ 作
+\begin{equation}\label{eq:film}
+\mathrm{FiLM}(\mathbf{h}) = (1 + \gamma) \odot \mathbf{h} + \beta
+\end{equation}
+形式的特征级调制\upcite{dexter}, 输入声部数 $S = 1$ 时该模块自然退化为恒等映射, 整套架构无需修改即可处理任意声部数; 跨时序回归再经双向 GRU (隐藏维 256, 1 层) 做最后一段时序整合, 输出 512 维隐表示。 双头解码部分中: $f_0$ 头输出 81 维音高 logits $\mathbf{z}_t$, 覆盖 MIDI 半音 38 至 118; 推理时对 logits 取 softmax, 以软取偏移叠加音符基准音高还原 Hz,
+\begin{equation}\label{eq:f0rec}
+\hat f_{0,t} = f^{\text{nom}}_t \cdot 2^{\,\Delta c_t / 1200}, \qquad \Delta c_t = \sum_{j=1}^{80} \big(\mathrm{softmax}\,\mathbf{z}_t\big)_j \, c_j,
+\end{equation}
+其中 $f^{\text{nom}}_t$ 为该帧所在音符的 MIDI 基准音高 (Hz), $c_j$ 为第 $j$ 个偏移桶的中心 (音分); $\mathrm{amp}$ 头采用 note-aware 设计, 先在帧级回归预测 $\log \mathrm{amp}$, 再以音符为单位聚合并平滑。 模型总可训练参数 7.66 M。 训练目标在对数域组合多项,
+\begin{equation}\label{eq:loss}
+\mathcal{L} = \mathcal{L}_{f_0} + \lambda_1 \, \mathcal{L}^{\text{Huber}}_{\log} + \lambda_2 \, (1 - r) + \lambda_3 \, \mathcal{L}^{\text{grad}} + \lambda_4 \, \mathcal{L}^{\text{ms}},
+\end{equation}
+其中 $\mathcal{L}_{f_0}$ 为 voiced 帧上的 81 类交叉熵, $\mathcal{L}^{\text{Huber}}_{\log}$ 为对数振幅 Huber 项, $r$ 为预测与真值的逐轨 Pearson 相关 (见式~(\ref{eq:pearson})), $\mathcal{L}^{\text{grad}}$ 为时间梯度项, $\mathcal{L}^{\text{ms}}$ 为按拍聚合的多尺度 MSE 项, 各权重 $\lambda_i$ 为配置量; 优化器为 AdamW。
 
 \subsubsection{伪代码}
 
@@ -161,15 +173,60 @@
 
 \subsubsection{评测指标}
 
-本文使用两组互补的评测指标。 帧级 $f_0$ 以原始音高准确率 (RPA, 偏差 $\le 50$ cents 计为正确) 评估, 这一指标在文献中被广泛接受, 也能与 CREPE、pYIN 等 $f_0$ 提取工具的官方报告直接对照。 帧级振幅以预测序列与真值序列的 Pearson 相关系数评估, 同时在线性域与对数域两种空间下报告: 线性域上 Pearson 反映模型对绝对响度变化的捕获能力, 对数域上则更接近人耳的对数感知特性, 也更对齐演奏者对"渐强渐弱"的主观刻度。 此外, 我们在评测时对长度足够的测试音轨整段计算 Pearson, 再以每条音轨为单位求均值与标准差; 这种聚合方式比逐帧聚合更稳健, 能避免静音段对相关系数的稀释作用。
+本文使用两组互补的评测指标。 帧级 $f_0$ 以原始音高准确率 (RPA) 评估, 定义为发声帧上预测音高与真值偏差在 50 音分以内的帧占比,
+\begin{equation}\label{eq:rpa}
+\mathrm{RPA} = \frac{\sum_t v_t \, \mathbf{1}\!\big(\,|1200 \log_2(\hat f_{0,t} / f_{0,t})| \le 50 \,\big)}{\sum_t v_t},
+\end{equation}
+其中 $v_t \in \{0, 1\}$ 为发声指示。 这一指标在文献中被广泛接受, 也能与 CREPE\upcite{crepe}、pYIN\upcite{mauchdixon} 等 $f_0$ 提取工具的官方报告直接对照。 帧级振幅以预测序列 $\hat a$ 与真值序列 $a$ 之间的逐轨 Pearson 相关系数 $r$ 评估, 先逐轨计算再跨轨平均,
+\begin{equation}\label{eq:pearson}
+r = \frac{1}{K} \sum_{k=1}^{K} \frac{\sum_t \big(\hat a^{(k)}_t - \bar{\hat a}^{(k)}\big)\big(a^{(k)}_t - \bar a^{(k)}\big)}{\sqrt{\sum_t \big(\hat a^{(k)}_t - \bar{\hat a}^{(k)}\big)^2} \, \sqrt{\sum_t \big(a^{(k)}_t - \bar a^{(k)}\big)^2}},
+\end{equation}
+其中 $K$ 为音轨数, $\bar{\cdot}$ 表示对该轨所有帧取均值。 同时在线性域与对数域两种空间下报告: 线性域上 Pearson 反映模型对绝对响度变化的捕获能力, 对数域上则更接近人耳的对数感知特性, 也更对齐演奏者对"渐强渐弱"的主观刻度。 逐轨先算再跨轨平均的聚合方式比逐帧聚合更稳健, 能避免静音段对相关系数的稀释作用。
 
 \subsubsection{主要结果}
 
-在 58 首曲目共 43 条声部轨上, 按曲名以 80:20 划分训练集与测试集, 训练 300 个 epoch, 用 4 个随机种子分别训练并以多种子均值与标准差作为最终汇报。 模型在测试集上达到帧级 $f_0$ RPA 约 \textbf{92.5\%}, 线性域 $\mathrm{amp}$ Pearson 相关约 $\mathbf{0.615 \pm 0.041}$。 RPA 接近上界, 说明基频在 MIDI 的强约束之下基本可被完整预测; 偶发的 7\% 余差大多落在乐句末尾的弱信号段、两个半音之间的滑奏过渡, 这两类位置上 $f_0$ 标注本身也不稳定, 因此不构成模型的真实瓶颈。 振幅的 Pearson 在 0.6 一线, 表明可预测部分主要由乐句轮廓与音符内动态包络支撑, 这两类信号都强烈依赖于 MIDI 中可直接读取的乐句结构与音符位置; 残差中较高频段的微观动态 (例如颤音引起的振幅调制 AM、乐句中段的力度微抖, 以及其他声部对当前声部响度的连续牵制) 则受真实演奏的不可观测因素影响, 不可由 MIDI 单独决定, 它们的存在使得 $\mathrm{amp}$ 的 Pearson 在该任务族里始终难以越过约 0.7 这一上界, 这与同类工作的报道相一致。
+在 58 首曲目共 43 条声部轨上, 按曲名以 80:20 划分训练集与测试集, 训练 300 个 epoch, 用 4 个随机种子分别训练并以多种子均值与标准差作为最终汇报。 模型在测试集上达到帧级 $f_0$ RPA 约 \textbf{92.5\%}, 线性域 $\mathrm{amp}$ Pearson 相关约 $\mathbf{0.615 \pm 0.041}$。 RPA 接近上界, 说明基频在 MIDI 的强约束之下基本可被完整预测; 偶发的 7\% 余差大多落在乐句末尾的弱信号段、两个半音之间的滑奏过渡, 这两类位置上 $f_0$ 标注本身也不稳定, 因此不构成模型的真实瓶颈。 振幅的 Pearson 在 0.6 一线, 表明可预测部分主要由乐句轮廓与音符内动态包络支撑, 这两类信号都强烈依赖于 MIDI 中可直接读取的乐句结构与音符位置; 残差中较高频段的微观动态 (例如颤音引起的振幅调制 AM、乐句中段的力度微抖, 以及其他声部对当前声部响度的连续牵制) 则受真实演奏的不可观测因素影响, 不可由 MIDI 单独决定。 该残差可能来自三种成分: (a) 跨架构都越不过的任务自身上限, (b) 默认指标自身放大特定噪声成分的产物, (c) 人耳真正可感知的演奏表达流失, 下文配置扫描、集成误差相关与多指标重构三项分析依次定位, 再由主观听感实验作收束。
+
+\subsubsection{上界饱和的稳健性}
+
+\paragraph{配置扫描}\quad
+为判断振幅 Pearson 的饱和是否仅为单一模型的不足, 本文沿四条干预轴对该任务做了系统配置扫描, 共覆盖 16 个方向类、累计 200 余个有记录的训练配置: 第一条轴是架构与容量 (双向 GRU、Transformer\upcite{dexter}、S4D、Mamba, 参数量 1 M 至 30 M); 第二条轴是损失与训练目标 (相关性损失、排序损失、多分辨率谱风格损失、力度感知教师蒸馏、异方差/瞬态加权损失、随机权重平均、平滑目标训练); 第三条轴是目标与特征变换 (高斯平滑、秩、CDF 均衡、巴特沃斯低通等目标表示, 小波/经验模态分解/陷波/可学习滤波等去噪范式, 逐曲归一化、ADSR 先验, 合成与分布外语料扩充); 第四条轴是集成与 oracle (异构多架构集成、乐谱力度注入、真值 $f_0$ oracle)。 每个方向取该方向最优配置后 (图~\ref{fig:closure}), 全部 16 个最优振幅 Pearson 均落在 $r \in [0.60, 0.69]$ 的窄带内, 其中 13/16 落在单模型基线 $\pm 0.02$ 以内, 没有任何一条方向单独突破 0.70。 这一致性显示, 默认指标下约 0.69 的上界是跨架构、跨损失、跨特征变换稳健共享的, 不能再靠继续替换模型或损失被推开。
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.92\linewidth]{figures/closure_barchart.pdf}
+\caption{16 个主要方向类系统扫描下各方向所达的最优原始帧级振幅 Pearson (每类一柱)。 虚线参考线为四种子单模型基线 ($r \approx 0.671$) 与 9 成员异构集成 ($r \approx 0.687$)。 所有方向聚拢在 $r \in [0.60, 0.69]$ 的窄带内, 其中 13/16 落在单模型基线 $\pm 0.02$ 之内。}
+\label{fig:closure}
+\end{figure}
+
+\paragraph{集成误差相关}\quad
+若上界确为跨架构共享, 它应在异构集成的误差相关上留下可量化的痕迹。 这里借助 Perrone 与 Cooper 的集成方差缩减框架\upcite{perronecooper}: 对 $N$ 个预测器取平均, 记单成员均方误差均值为 $\bar{E}$、成员间误差两两相关为 $\rho_e$, 集成均方误差为
+\begin{equation}\label{eq:ensemble}
+E_{\text{ens}} = \bar{E} \, \frac{1 + (N-1)\rho_e}{N}, \qquad \frac{1}{N} \le \frac{E_{\text{ens}}}{\bar{E}} \le 1,
+\end{equation}
+归一化后取值在 $1/N$ (完全不相关, 线性下降) 与 $1$ (完全相关, 毫无改进) 之间; $\rho_e$ 越接近 1, 平均能消去的方差越少。 本文据此构造一个由 9 个架构差异显著的成员组成的异构集成 (蒸馏 Mamba 基线加上 8 个不同骨干、不同归一化、不同训练长度的检查点), 在 33 条测试轨上把逐帧对数振幅残差汇成一池, 对全部 $\binom{9}{2} = 36$ 对成员算两两误差相关, 得非对角平均误差相关 $\rho_e \approx 0.962$ (成对范围 $[0.912, 0.982]$)。 取 $N = 9$、$\rho_e = 0.962$ 代入式~(\ref{eq:ensemble}), 集成均方误差相对单模型缩减因子约 0.966, 即平均仅能消去单模型平方误差方差的约 3.4\%。 实测后验印证: 相对四种子单模型基线 $0.671 \pm 0.005$, 完整 9 成员异构集成达 $r = 0.687$, $\Delta r \approx +0.016$, 与 $\rho_e$ 所允许的方差收缩预算高度吻合。 集成几乎无法降低残差, 说明该残差是跨归纳偏置共享的, 而非某个特定模型独有的错配。
+
+\paragraph{多指标重构}\quad
+默认的帧级线性 Pearson 容易被最响的几帧、子音符相位漂移、逐录音的话筒增益主导, 把音频内在因素与乐谱可恢复的表达混入同一刻度。 本文不重训, 仅在六个对预测与真值对称施加的互补指标下重新评测同一组预测 (表~\ref{tab:metricpanel}): 对数振幅 Pearson 消除线性 RMS 对最响帧的偏向; Sones 感知响度 Pearson\upcite{zwicker} 用 Zwicker 心理声学模型, 与对数结果交叉验证不是单一变换的人为产物; $\sigma = 1$ s 高斯平滑工作在乐句尺度上, 跳过承载多数音频噪声的子音符颗粒; 逐轨秩 ($\sigma = 10$ s) 进一步抵消乐谱不可预测的逐录音增益偏移, 提供秩尺度诊断上界; 逐音符 Pearson 在每个标注音符窗内聚合, 给出正交的逐事件一致性。 9 成员集成在六个指标下的 Pearson 从默认线性 RMS 的 0.687 单调升至秩尺度的 0.900, 三步抬升分别约为对数 $+0.14$、$\sigma = 1$ s 乐句 $+0.03$、逐轨秩 $+0.05$, 各步均有清晰物理解释。 这意味着默认 0.69 不是模型能力的绝对刻度, 而是该指标自身放大特定噪声成分后的产物; 但默认与重构指标之差具体对应何种丢失 (任何 MIDI 条件模型都不可恢复的音频内在噪声, 还是真正被漏掉的演奏表达), 仅靠指标本身无法判定, 需要主观听感实验作答。
+
+\begin{table}[htbp]\centering
+\caption{同一组预测在六个互补振幅指标下的振幅 Pearson}\label{tab:metricpanel}
+\begin{tabular}{lcc}
+\toprule
+指标 & 单模型 (4 种子) & 9 成员异构集成 \\
+\midrule
+线性 RMS Pearson (默认) & $0.671 \pm 0.005$ & 0.687 \\
+对数振幅 Pearson & $0.815 \pm 0.004$ & 0.823 \\
+Sones 感知响度 Pearson & $0.728 \pm 0.007$ & 0.747 \\
+乐句 Pearson ($\sigma = 1$ s) & $0.841 \pm 0.008$ & \textbf{0.855} \\
+秩 Pearson ($\sigma = 10$ s, 诊断上界) & $0.810 \pm 0.095$ & \textbf{0.900} \\
+逐音符 Pearson & $0.394 \pm 0.017$ & 0.420 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsubsection{主观听感实验}
 
-约 0.7 这一 Pearson 上界究竟丢失了什么? 本文用一项 $N = 26$ 的强制二选一 A/B 听感实验作答。 实验材料特意选取测试集中振幅可预测度最低的小提琴片段 (单乐器 Pearson 约 0.50, 见 §V.1.5 表~\ref{tab:per-inst}), 长度 20 秒, 用同一 8 谐波加性合成器分别用真实 $(f_0, \mathrm{amp})$ 与模型预测的 $(f_0, \mathrm{amp})$ 驱动, 让被试在哪一版噪声更多、哪一版表达更多两个维度上做选择; 在最难的乐器上验证听感结论, 等价于对所有乐器给出保守下界。 结果见表~\ref{tab:listening}: 噪声维度 26 名被试全部选择真实版 ($p \approx 3 \times 10^{-8}$); 表达维度则接近随机 (15:11, $p \approx 0.56$)。 这意味着模型预测相对于真实包络所丢掉的那部分主要是音频内在噪声, 而不是演奏表达内容; 该 Pearson 饱和因而不损害端到端系统的部署效果。
+默认指标约 0.69 与重构指标约 0.90 之间究竟丢失了什么? 本文用一项 $N = 26$ 的强制二选一 A/B 听感实验作答。 实验材料特意选取测试集中振幅可预测度最低的小提琴片段 (单乐器 Pearson 约 0.50, 见表~\ref{tab:per-inst}), 长度 20 秒, 用同一 8 谐波加性合成器分别用真实 $(f_0, \mathrm{amp})$ 与模型预测的 $(f_0, \mathrm{amp})$ 驱动, 让被试在哪一版噪声更多、哪一版表达更多两个维度上做选择; 在最难的乐器上验证听感结论, 等价于对所有乐器给出保守下界。 结果见表~\ref{tab:listening}: 噪声维度 26 名被试全部选择真实版 ($p \approx 3 \times 10^{-8}$); 表达维度则接近随机 (15:11, $p \approx 0.56$)。 这意味着模型预测相对于真实包络所丢掉的那部分主要是音频内在噪声, 而不是演奏表达内容; 该 Pearson 饱和因而不损害端到端系统的部署效果。
 
 \begin{table}[htbp]\centering
 \caption{强制二选一 A/B 听感研究 ($N = 26$)}\label{tab:listening}
@@ -245,7 +302,7 @@ bn & 巴松 & 3 & $0.497 \pm 0.049$ \\
 
 \subsubsection{适用范围说明}
 
-需要明确, 本节所报告的整体数值 ($f_0$ RPA 约 92.5\%、振幅 Pearson $0.615 \pm 0.041$) 都依赖于本文测试集的乐器分布: 43 条声部轨中弦乐占 21、木管 12、铜管 10, 弦乐占比近半, 因而整体均值被弦乐这一最难的族强烈拉低。 真正稳定的量是表~\ref{tab:per-inst} 中的逐乐器 Pearson, 它由各乐器自身的物理产声机制与 MIDI 之间的信息差距决定 (颤音、气压调控、弓速等不可观测因素), 不依赖于测试集中各乐器各占多少。 因此, 若将本文模型迁移到一个铜管比例更高的曲库, 整体 Pearson 会上移; 反过来, 在以弦乐独奏为主的曲库上整体 Pearson 会下移。 但每一种乐器自己的可预测度数值基本保持稳定, 上一节主观听感实验也正是为此选取最难的小提琴作答, 以验证这种乐器内部的稳定上界确实可以承受听感校验。 该乐器内稳定性同样意味着, 后续工作引入更大规模、更高多样性的真实录音时, 主要会改变表~\ref{tab:per-family} 中的族间相对比例与整体均值, 而不会改变本文得到的乐器内可预测度排序及其物理解释。
+需要明确, 本节所报告的整体数值 ($f_0$ RPA 约 92.5\%、振幅 Pearson $0.615 \pm 0.041$) 都依赖于本文测试集的乐器分布: 43 条声部轨中弦乐占 21、木管 12、铜管 10, 弦乐占比近半, 因而整体均值被弦乐这一最难的族强烈拉低。 真正稳定的量是表~\ref{tab:per-inst} 中的逐乐器 Pearson, 它由各乐器自身的物理产声机制与 MIDI 之间的信息差距决定 (颤音、气压调控、弓速等不可观测因素), 不依赖于测试集中各乐器各占多少。 因此, 若将本文模型迁移到一个铜管比例更高的曲库, 整体 Pearson 会上移; 反过来, 在以弦乐独奏为主的曲库上整体 Pearson 会下移。 但每一种乐器自己的可预测度数值基本保持稳定, 前文主观听感实验也正是为此选取最难的小提琴作答, 以验证这种乐器内部的稳定上界确实可以承受听感校验。 该乐器内稳定性同样意味着, 后续工作引入更大规模、更高多样性的真实录音时, 主要会改变表~\ref{tab:per-family} 中的族间相对比例与整体均值, 而不会改变本文得到的乐器内可预测度排序及其物理解释。
 
 \subsection{\textcolor{red}{TODO}}
 
@@ -309,6 +366,10 @@ bn & 巴松 & 3 & $0.497 \pm 0.049$ \\
 \bibitem{bach10} Z. Duan, B. Pardo, and C. Zhang, ``Multiple Fundamental Frequency Estimation by Modeling Spectral Peaks and Non-peak Regions,'' \emph{IEEE Trans. on Audio, Speech, and Language Processing}, vol.~18, no.~8, pp.~2121--2133, 2010.
 
 \bibitem{mellody} M. Mellody and G. H. Wakefield, ``The Time-Frequency Characteristics of Violin Vibrato: Modal Distribution Analysis and Synthesis,'' \emph{Journal of the Acoustical Society of America}, vol.~107, no.~1, pp.~598--611, 2000.
+
+\bibitem{perronecooper} M. P. Perrone and L. N. Cooper, ``When Networks Disagree: Ensemble Methods for Hybrid Neural Networks,'' in R. J. Mammone, ed., \emph{Neural Networks for Speech and Image Processing}. Chapman-Hall, 1993.
+
+\bibitem{zwicker} E. Zwicker and H. Fastl, \emph{Psychoacoustics: Facts and Models}, 3rd ed. Springer, 2007.
 
 % ---- 队友 (合成器部分) 引用 ----
 \textcolor{red}{TODO}
